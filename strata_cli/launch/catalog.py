@@ -455,11 +455,9 @@ class Catalog:
             chosen = family
         elif not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
-        elif len(offered) > 1 and "deepseek41" in offered:   # one name, two families (Unsloth sells the same words for both models Strata serves): the bare
-            # word stays with the family that had it first, the names in setup.py's DSV41_KEEPS_BARE.  A name that collision adds later (Unsloth's 3-bit set
-            # for both models, 2026-11-08) goes to the other family by itself.  --family picks either of them.
-            keeps = getattr(self.strata.setup_module(), "DSV41_KEEPS_BARE", ()) or ()
-            chosen = "deepseek41" if match in keeps else next(f for f in offered if f != "deepseek41")
+        elif len(offered) > 1 and "deepseek41" in offered:
+            # Keep the existing bare-name choices for the two names shared with Qwen.
+            chosen = "unsloth" if match == "UD-Q3_K_XL" and "unsloth" in offered else "deepseek41"
         else:
             chosen = "qwen" if "qwen" in offered else offered[0]
         if chosen == "deepseek41":       # the Mac and DGX Spark gates are DeepSeek's, and one name can belong to two families: gate the family that was chosen

@@ -924,10 +924,6 @@ DSV41_UD_FILES = {
 }
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
 
-# Unsloth reuses its quant names for both models Strata serves, so a name can belong to two families.  Two names collide today: UD-IQ1_M and UD-Q3_K_XL.
-# A bare `--model UD-...` with no --family stays with the family that had the word first (the three of DSV41_UD_LOW / DSV41_SHARD's set); a new collision
-# goes to the other family.  `--family deepseek41` picks the DeepSeek one either way.  Read by strata_cli/launch/catalog.py.
-DSV41_KEEPS_BARE = ("UD-Q8_K_XL", "UD-IQ1_S", "UD-IQ1_M")
 # The ISTA-DAS Coder (2026-11-01; the official ISTA-DASLab repository since 2026-11-02): ISTA-DAS's coding variant of this model, "the layout of the
 # IQ2_XXS set with half of the experts removed": 192 routed experts a layer instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00
 # set's name, shape and type).  Five model files in the folder IQ2_XXS/ (shard 1 = the metadata, shards 2-5 = the model; the Engram would be the sixth shard of the split) plus two files at

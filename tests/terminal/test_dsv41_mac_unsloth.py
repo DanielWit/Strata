@@ -92,8 +92,7 @@ class Lists(unittest.TestCase):
 
     def test_a_shared_name_with_no_family_is_the_other_models_size(self):
         # Unsloth sells UD-Q3_K_XL for Qwen3.8 as well, and DeepSeek's copy is the newer: the bare word goes to Qwen, so a Mac's DeepSeek gate cannot fire
-        # for it; --family deepseek41 asks for DeepSeek's set and gets the line above.  UD-IQ1_M collides too, but DeepSeek had that word first
-        # (setup.py's DSV41_KEEPS_BARE), so it stays DeepSeek's and --family unsloth picks the Qwen file.
+        # for it; --family deepseek41 asks for DeepSeek's set and gets the line above. UD-IQ1_M still defaults to DeepSeek.
         self.assertEqual(catalog(self.hw).resolve("ud-q3_k_xl"), ("unsloth", "UD-Q3_K_XL"))
         self.assertEqual(catalog(self.hw).resolve("ud-iq1_m"), ("deepseek41", "UD-IQ1_M"))
         self.assertEqual(catalog(self.hw).resolve("ud-iq1_m", "unsloth"), ("unsloth", "UD-IQ1_M"))
@@ -365,6 +364,10 @@ class SparkOffered(unittest.TestCase):
             for m in OFFERED + ("IST-DAS-2.25bpw",):
                 self.assertIsNone(dsv41_fit.not_here(m))
             self.assertEqual(dsv41_fit.not_here("UD-Q3_K_XL"), SPARK_LINE)
+            c = catalog(PC, root=Path(__file__).resolve().parents[2])
+            self.assertEqual(c.resolve("ud-q3_k_xl"), ("unsloth", "UD-Q3_K_XL"))
+            with self.assertRaisesRegex(ValueError, "not tested on a DGX Spark"):
+                c.resolve("ud-q3_k_xl", "deepseek41")
 
 
 if __name__ == "__main__":
