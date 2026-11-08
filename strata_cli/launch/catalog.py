@@ -447,21 +447,27 @@ class Catalog:
             near = S.closest(family, list(families))
             raise ValueError(f"There is no model family called '{family}'." + (f" Did you mean '{near}'?" if near else "")
                              + " Families: " + ", ".join(families) + ".")
-        from strata_control import dsv41_fit
-        line = dsv41_fit.not_here(match) or (dsv41_fit.MAC_NOT_YET_LINE if match in dsv41_fit.MAC_NOT_YET and self._mac_hardware() else None)
-        if line:
-            raise ValueError(line + " Use ist-das-2.00bpw or ist-das-2.25bpw.")
         offered = [f for f in families if match in self.strata.sizes_of(models, f)]
         if family is not None:
             if family not in offered:
                 raise ValueError(f"{families[family]['title']} has no size {match}. It offers: "
                                  + ", ".join(self.strata.sizes_of(models, family)) + ".")
-            return family, match
-        if not offered:
+            chosen = family
+        elif not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
-        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
-            return "deepseek41", match
-        return ("qwen" if "qwen" in offered else offered[0]), match
+        elif len(offered) > 1 and "deepseek41" in offered:   # one name, two families (Unsloth sells the same words for both models Strata serves): the bare
+            # word stays with the family that had it first, the names in setup.py's DSV41_KEEPS_BARE.  A name that collision adds later (Unsloth's 3-bit set
+            # for both models, 2026-11-08) goes to the other family by itself.  --family picks either of them.
+            keeps = getattr(self.strata.setup_module(), "DSV41_KEEPS_BARE", ()) or ()
+            chosen = "deepseek41" if match in keeps else next(f for f in offered if f != "deepseek41")
+        else:
+            chosen = "qwen" if "qwen" in offered else offered[0]
+        if chosen == "deepseek41":       # the Mac and DGX Spark gates are DeepSeek's, and one name can belong to two families: gate the family that was chosen
+            from strata_control import dsv41_fit
+            line = dsv41_fit.not_here(match) or (dsv41_fit.MAC_NOT_YET_LINE if match in dsv41_fit.MAC_NOT_YET and self._mac_hardware() else None)
+            if line:
+                raise ValueError(line + " Use ist-das-2.00bpw or ist-das-2.25bpw.")
+        return chosen, match
 
     def model_name_of(self, family: str | None, model: str | None) -> str | None:
         """The ``model_name`` setup writes into this model's run config (``qwen3.8-flash-next-iq3_s``), known before the model is installed: what the drafter table is keyed by."""
