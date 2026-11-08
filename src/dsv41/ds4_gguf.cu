@@ -1543,64 +1543,66 @@ void moe_down(const x3::MoeArgs& a, const float* h, const float* sh_out, float* 
     check("moe_down");
 }
 
-bool win_experts(const x3::WinArgs& a, cudaStream_t s) {
+bool win_experts(const x3::WinArgs& a, cudaStream_t s, bool cpu_only) {
     if (a.T < 1 || a.T > kMaxEnt || !mx_geometry("win_experts", a.k, a.n_embd, a.n_ff) || a.h == nullptr ||
         a.part == nullptr || a.out == nullptr) {
         std::fprintf(stderr, "ds4 gguf win_experts: not covered (T %d)\n", a.T);
         return false;
     }
-    MxArgs m = mx_args(a.lay, a.n_embd, a.n_ff, a.limit);
-    m.grp_ptr = a.grp_ptr;
-    m.grp_start = a.grp_start;
-    m.grp_ent = a.grp_ent;
-    m.n_groups = a.n_groups;
-    Scratch* sc = scratch(s);
-    if (sc == nullptr) return false;
-    m.x = a.x;
-    m.x_stride = a.x_stride;
-    m.h = a.h;
-    m.part = a.part;
-    m.xq = sc->xq;
-    m.xd = sc->xd;
-    m.hq = sc->hq;
-    m.hd = sc->hd;
-    const int groups = a.T * a.k;   // at most (the blocks past the real count return at once)
-    const bool mx = mx_experts(a.lay);
-    iq::Args ia;
-    if (!mx) {   // low-bit experts: ds4_iq's kernels on the same groups and scratch
-        if (!iq_args(a.lay, a.n_embd, a.n_ff, a.limit, ia, "win_experts")) return false;
-        ia.grp_ptr = a.grp_ptr;
-        ia.grp_start = a.grp_start;
-        ia.grp_ent = a.grp_ent;
-        ia.n_groups = a.n_groups;
-        ia.h = a.h;
-        ia.part = a.part;
-        ia.xq = sc->xq;
-        ia.xd = sc->xd;
-        ia.hq = sc->hq;
-        ia.hd = sc->hd;
-    }
-    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.x, a.x_stride, a.T, a.n_embd, sc->xq, sc->xd, s);
-    if (mx) {
+    if (!cpu_only) {
+        MxArgs m = mx_args(a.lay, a.n_embd, a.n_ff, a.limit);
+        m.grp_ptr = a.grp_ptr;
+        m.grp_start = a.grp_start;
+        m.grp_ent = a.grp_ent;
+        m.n_groups = a.n_groups;
+        Scratch* sc = scratch(s);
+        if (sc == nullptr) return false;
+        m.x = a.x;
+        m.x_stride = a.x_stride;
+        m.h = a.h;
+        m.part = a.part;
+        m.xq = sc->xq;
+        m.xd = sc->xd;
+        m.hq = sc->hq;
+        m.hd = sc->hd;
+        const int groups = a.T * a.k;   // at most (the blocks past the real count return at once)
+        const bool mx = mx_experts(a.lay);
+        iq::Args ia;
+        if (!mx) {   // low-bit experts: ds4_iq's kernels on the same groups and scratch
+            if (!iq_args(a.lay, a.n_embd, a.n_ff, a.limit, ia, "win_experts")) return false;
+            ia.grp_ptr = a.grp_ptr;
+            ia.grp_start = a.grp_start;
+            ia.grp_ent = a.grp_ent;
+            ia.n_groups = a.n_groups;
+            ia.h = a.h;
+            ia.part = a.part;
+            ia.xq = sc->xq;
+            ia.xd = sc->xd;
+            ia.hq = sc->hq;
+            ia.hd = sc->hd;
+        }
+        (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.x, a.x_stride, a.T, a.n_embd, sc->xq, sc->xd, s);
+        if (mx) {
 #if defined(STRATA_METAL)
-        // mx_gate_up_kernel on the Metal dispatch; the launch below is the fallback
-        if (!::strata::dsv41::metal_host::mx_gu(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups,
-                                                a.lay.trellis, a.n_embd, a.n_ff, a.limit, sc->xq, sc->xd, a.h, groups))
+            // mx_gate_up_kernel on the Metal dispatch; the launch below is the fallback
+            if (!::strata::dsv41::metal_host::mx_gu(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups,
+                                                    a.lay.trellis, a.n_embd, a.n_ff, a.limit, sc->xq, sc->xd, a.h, groups))
 #endif
-            launch_groups<GateUpK>(m, a.n_ff, groups, a.T, s);
-    } else {
-        iq::gate_up(ia, groups, a.T, s);
-    }
-    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
-    if (mx) {
+                launch_groups<GateUpK>(m, a.n_ff, groups, a.T, s);
+        } else {
+            iq::gate_up(ia, groups, a.T, s);
+        }
+        (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
+        if (mx) {
 #if defined(STRATA_METAL)
-        // mx_down_kernel on the Metal dispatch; the launch below is the fallback
-        if (!::strata::dsv41::metal_host::mx_dn(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups,
-                                                a.lay.trellis, a.n_embd, a.n_ff, sc->hq, sc->hd, a.part, groups))
+            // mx_down_kernel on the Metal dispatch; the launch below is the fallback
+            if (!::strata::dsv41::metal_host::mx_dn(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups,
+                                                    a.lay.trellis, a.n_embd, a.n_ff, sc->hq, sc->hd, a.part, groups))
 #endif
-            launch_groups<DownK>(m, a.n_embd, groups, a.T, s);
-    } else {
-        iq::down(ia, groups, a.T, s);
+                launch_groups<DownK>(m, a.n_embd, groups, a.T, s);
+        } else {
+            iq::down(ia, groups, a.T, s);
+        }
     }
 #if !defined(STRATA_METAL)
     // (this port's dispatches are synchronous and nothing is published to wait for: ds4_kernels.cu's wait_seq)

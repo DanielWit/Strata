@@ -455,6 +455,34 @@ void test_experts(int D, int F, cudaStream_t s) {
     if (!same) ++g_fail;
     std::printf("%-44s %s\n", "  ... bit for bit the token path's", same ? "ok" : "FAIL");
 
+    // CPU-only mixed experts: no plan entries, with the mailbox's padded response stride.
+    {
+        const size_t stride = (size_t) D + 32;
+        std::vector<float> padded((size_t) T * stride);
+        for (int t = 0; t < T; ++t)
+            std::copy_n(cpu.data() + (size_t) t * D, D, padded.data() + (size_t) t * stride);
+        unsigned long long* empty = dev(std::vector<unsigned long long>((size_t) T * 8, 0));
+        float* response = dev(padded);
+        unsigned* ready = dev(std::vector<unsigned>{17});
+        x3::WinArgs c = w;
+        c.plan_ptr = empty;
+        c.wait_ptr = ready;
+        c.wait_val = 17;
+        c.cpu_part = response;
+        c.cpu_stride = stride;
+        if (!gg::win_experts(c, s, true)) ++g_fail;
+        CU(cudaStreamSynchronize(s));
+        const auto out = host(dwo, (size_t) T * D);
+        std::vector<double> ref((size_t) T * D);
+        for (int t = 0; t < T; ++t)
+            for (int d = 0; d < D; ++d)
+                ref[(size_t) t * D + d] = (cflag[t] ? cpu[(size_t) t * D + d] : 0.0f) + sh[(size_t) t * D + d];
+        expect("CPU-only window combines", out.data(), ref.data(), ref.size(), 1e-6);
+        CU(cudaFree(empty));
+        CU(cudaFree(response));
+        CU(cudaFree(ready));
+    }
+
     // the prompt path's set: rows sorted by expert (bounds), each row a token index (row_idx) - experts of a few rows (the
     // light kernels), then of more (the tiles)
     for (int R : {100, 200, 400}) {

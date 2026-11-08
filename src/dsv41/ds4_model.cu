@@ -2415,13 +2415,21 @@ struct Model::Impl {
             off += align256(bytes) + (store_gb() > 0 ? ExpertStore::kSlack : 0);   // (the store's aligned reads spill into the gaps)
         }
         l.lay.fmt = gg::kFmtMXFP4;
-        if (!gg::mx_experts(l.lay) && (gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1) ||
-                                       gg::expert_type(l.lay, 0) == gg::kTypeMXFP4 ||
-                                       gg::expert_type(l.lay, 2) == gg::kTypeMXFP4)) {
-            err = P + ": gate / up / down of types " + gg::type_name(l.lay.K[0]) + " / " +
-                  gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]) +
-                  " (gate and up must match; MXFP4 does not mix with the others)";
-            return false;
+        if (!gg::mx_experts(l.lay)) {
+            const int gate = gg::expert_type(l.lay, 0), down = gg::expert_type(l.lay, 2);
+            if (gate != gg::expert_type(l.lay, 1) || gate == gg::kTypeMXFP4 || (down == gg::kTypeMXFP4 && l.mtp)) {
+                err = P + ": unsupported gate / up / down types " + gg::type_name(l.lay.K[0]) + " / " +
+                      gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]);
+                return false;
+            }
+            if (down == gg::kTypeMXFP4) {   // shortcut: mixed MXFP4 runs on CPU until the GPU paths support it
+#if defined(STRATA_METAL)
+                err = P + ": mixed MXFP4 experts are not supported on Metal";
+                return false;
+#endif
+                l.cpu_only = true;
+                std::fprintf(stderr, "ds4: layer %d has mixed %s/MXFP4 experts; using the CPU lane\n", l.il, gg::type_name(gate));
+            }
         }
         l.blob = off;
         // a type the device kernels do not take (none of the i-quants now: gg::type_on_device lists them): the layer stays on the CPU lane, where
@@ -2929,6 +2937,7 @@ struct Model::Impl {
             bool chunk_unsupported = false;
             const char* why = "";
             for (const Layer& l : L) {
+                if (l.cpu_only) { chunk_unsupported = true; why = "CPU-only experts"; break; }
                 for (int r = 0; r < 3; ++r)
                     if (!gg::type_on_chunk(gg::expert_type(l.lay, r))) { chunk_unsupported = true; why = gg::type_name(gg::expert_type(l.lay, r)); break; }
                 if (chunk_unsupported) break;
@@ -5259,7 +5268,7 @@ struct Model::Impl {
     // like a VRAM one (no CPU lane, no second pass).  false: not mappable / the cap is reached (the CPU lane has it).
     bool zc_try(Layer& l, int e) {
         static const bool on = std::getenv("DS4_ZC") != nullptr;   // (measured: no faster than the CPU lane - cold pages come from the SSD either way)
-        if (!on || l.lay.fmt != gg::kFmtMXFP4 || l.nm != 1 || l.vm.empty()) return false;
+        if (!on || l.cpu_only || l.lay.fmt != gg::kFmtMXFP4 || l.nm != 1 || l.vm.empty()) return false;
         if (l.vm[(size_t) e][0].raw != nullptr) return true;
         uint64_t a[3];
         for (int r = 0; r < 3; ++r) {
@@ -9721,7 +9730,7 @@ struct Model::Impl {
     int lane_class(int li) const { return li >= 0 && li < (int) ln_layer.size() ? ln_layer[(size_t) li] : -1; }
     // a layer the PCIe lane can serve: a trunk layer of one GPU, a GGUF's experts, whose decode picks fit the slots
     static bool lane_layer_ok(const Layer& l) {
-        return !l.mtp && l.nm == 1 && l.lay.fmt == gg::kFmtMXFP4 && l.k_exp > 0 && l.k_exp <= kPicks && l.blob > 0;
+        return !l.mtp && !l.cpu_only && l.nm == 1 && l.lay.fmt == gg::kFmtMXFP4 && l.k_exp > 0 && l.k_exp <= kPicks && l.blob > 0;
     }
     std::string lane_fmt(const Layer& l) const {
         return std::string(gg::type_name(gg::expert_type(l.lay, 0))) + "/" + gg::type_name(gg::expert_type(l.lay, 1)) +
@@ -14146,7 +14155,8 @@ struct Model::Impl {
             if (!mv(d, {job(l.s2, d.sh, d.sh_out, T, FF, D)}, err)) return false;
             prof_mark(d, 2);
             const x3::ExpertLayout& lay = nm > 1 ? l.hlay : l.lay;
-            if (T == 1 && moe_token_path) {
+            const bool mixed_cpu = l.cpu_only && gg::expert_type(l.lay, 2) == gg::kTypeMXFP4 && !gg::mx_experts(l.lay);
+            if (T == 1 && moe_token_path && !mixed_cpu) {
                 x3::MoeArgs ma;
                 ma.plan_ptr = d.plan_ptr;
                 ma.plan_w = d.rw;
@@ -14238,7 +14248,7 @@ struct Model::Impl {
                 wa.n_embd = D;
                 wa.n_ff = FF;
                 wa.limit = g.lim;
-                if (!(lay.fmt == gg::kFmtMXFP4 ? gg::win_experts(wa, s) : x3::win_experts(wa, s))) {
+                if (!(lay.fmt == gg::kFmtMXFP4 ? gg::win_experts(wa, s, mixed_cpu) : x3::win_experts(wa, s))) {
                     err = "exl3 win_experts failed";
                     return false;
                 }

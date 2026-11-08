@@ -599,6 +599,44 @@ int main(int argc, char** argv) {
                 std::printf("%-7s cpu rows: %s\n", iq::name(type), gg::iq_cpu_own_rows(type) ? "Strata AVX2" : "ggml-cpu");
             }
         }
+        if (type == iq::kIQ3_XXS || type == iq::kIQ2_S) {
+            gg::IqCpu fm; std::string err;
+            if (!gg::iq_cpu_fmt(type, 39, E, FF, fm, err)) {
+                std::printf("mixed CPU lane: %s\n", err.c_str()); ++fails;
+            } else {
+                const auto* traits = ggml_get_type_traits(GGML_TYPE_MXFP4);
+                std::vector<float> weights((size_t) E * FF), decoded(weights.size());
+                for (float& w : weights) w = nd(rng) * 0.1f;
+                const size_t row = ggml_row_size(GGML_TYPE_MXFP4, FF);
+                std::vector<uint8_t> mx((size_t) E * row), act(fm.act_bytes), hact(fm.h_bytes);
+                for (int r = 0; r < E; ++r) {
+                    traits->from_float_ref(weights.data() + (size_t) r * FF, mx.data() + (size_t) r * row, FF);
+                    traits->to_float(mx.data() + (size_t) r * row, decoded.data() + (size_t) r * FF, FF);
+                }
+                gg::iq_cpu_quant(fm.gu_act, x.data(), E, act.data());
+                const auto xhat = act_values(fm.gu_act, act.data(), E);
+                std::vector<float> h(FF), y(E); float* hp[] = {h.data()}; float* yp[] = {y.data()};
+                const void* ap[] = {act.data()};
+                gg::iq_cpu_gate_up(fm, G[0].bytes.data(), U[0].bytes.data(), ap, 1, hp, 0, FF, lim);
+                double wg = 0, wd = 0;
+                for (int r = 0; r < FF; ++r) {
+                    double sg, su;
+                    const double g = dotd(G[0].w.data() + (size_t) r * E, xhat.data(), E, &sg);
+                    const double u = dotd(U[0].w.data() + (size_t) r * E, xhat.data(), E, &su);
+                    wg = std::max(wg, std::fabs(h[r] - swiglu(g, u, lim)) / (sg + su + 1e-30));
+                }
+                gg::iq_cpu_quant(fm.d_act, h.data(), FF, hact.data());
+                const auto hhat = act_values(fm.d_act, hact.data(), FF);
+                const void* hq[] = {hact.data()};
+                gg::iq_cpu_down(fm, mx.data(), hq, 1, yp, 0, E);
+                for (int r = 0; r < E; ++r) {
+                    double sa; const double ref = dotd(decoded.data() + (size_t) r * FF, hhat.data(), FF, &sa);
+                    wd = std::max(wd, std::fabs(y[r] - ref) / (sa + 1e-30));
+                }
+                report("mixed CPU gate/up", type, wg, 1e-5);
+                report("mixed CPU MXFP4 down", type, wd, 1e-5);
+            }
+        }
         CK(hipFree(dblob));
     }
     if (g_cmp && devs.size() > 1) { std::fclose(g_cmp); g_cmp = nullptr; std::printf("device %d vs device %d: %ld buffers, %ld differ\n", devs[di], devs[0], g_cmp_n, g_cmp_bad); fails += g_cmp_bad != 0; }

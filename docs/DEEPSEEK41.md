@@ -111,6 +111,8 @@ Setup needs `strata-dsv41` next to the engine (or `STRATA_DSV41_EXE`) and says s
 `cmake -DSTRATA_BUILD_DSV41=ON`. The default context is 8192 tokens, the size it was checked at; `--context` asks for more.
 Loading takes a few minutes (the config sets `"engine_ready_s": 3600`).
 
+The DeepSeek `UD-Q3_K_XL` set needs an engine built with its mixed-expert support; the 0.1.58 engine package does not have it. Four layers use the CPU for their experts, and prompts run in windows instead of the fast chunked path. This can be slower. A 16-token smoke test passed on two RTX 3090 cards with 251 GiB of system RAM; other hardware has not been tested with this set.
+
 **Unsloth reuses its size names for both models Strata serves**, so `UD-Q3_K_XL` and `UD-IQ1_M` are also Qwen3.8-Flash-Next sizes. A name written on its own
 stays with the family that had it first: `--model UD-IQ1_M` is DeepSeek's, `--model UD-Q3_K_XL` is Qwen's (DeepSeek's 3-bit set arrived later). Say
 `--family deepseek41`, as above, for the DeepSeek one. Strata recognises existing DeepSeek files by their names and sizes; setup checks their hashes.
