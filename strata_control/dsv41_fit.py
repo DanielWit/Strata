@@ -92,8 +92,7 @@ ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_1
 # router in F32).  This set has not been timed or scored against the original model here.
 ISTA_SETS["UD-Q3_K_XL"] = {"title": "Unsloth UD-Q3_K_XL", "set_bytes": 282_310_606_623, "experts_gb": 271.62, "dense_gb": 10.69,
                            "profile": "profile-2.00.bin", "meta_bytes": 0, "ppl": "?", "ram_ok_gb": 64.0, "disk_total": 401.0, "measured": "",
-                           "tight_words": "reads the rest from the SSD. This version has not been timed yet: expect it between the 1-bit sets "
-                                          "and Unsloth's 508 GB set, and more RAM or a faster NVMe drive makes it quicker.",
+                           "tight_words": "reads the rest from the SSD. This version has not been timed yet.",
                            "spill_words": "This computer has {ram:.0f} GB of RAM. This version has not been timed on any computer yet; its dense "
                                           "weights alone are 10.7 GB, so with this little RAM most experts come from the SSD while it answers: it "
                                           "works but is slow, and a word can take seconds. More RAM fixes it. It is still allowed.",

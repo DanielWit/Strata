@@ -101,7 +101,6 @@ engines): on an Apple M5 Max 19 to 22 tokens a second with all 7,680 experts in 
 ./setup.sh --family deepseek41 --model ISTA-DAS-1.75bpw   # 239 GB, the smallest
 ./setup.sh --family deepseek41 --model UD-Q8_K_XL        # Unsloth's 508 GB set, for hundreds of GB of RAM or several cards
 ./setup.sh --family deepseek41 --model UD-Q3_K_XL        # Unsloth's 3-bit set: 282 GB of model, 401 GB with the shared n-gram table (485 GB with the table it ships with)
-./setup.sh --family deepseek41 --model UD-IQ1_S          # Unsloth's 1-bit sets: 233 GB (UD-IQ1_S) and 250 GB (UD-IQ1_M)
 ./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q3_K_XL / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
 strata launch --model ist-das-2.00bpw --plan             # where it would go on this computer, nothing changed
 strata launch --model-path DIR --model ist-das-2.00bpw   # start from files you already have
