@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -30,18 +31,10 @@ template <typename T> static T* up(const std::vector<T>& v) {
 template <typename T> static std::vector<T> down_(const T* d, size_t n) {
     std::vector<T> v(n); CK(hipMemcpy(v.data(), d, n * sizeof(T), hipMemcpyDeviceToHost)); return v;
 }
-static float h2f(uint16_t h) {
-    const int s = h >> 15, e = (h >> 10) & 31, m = h & 1023;
-    float f = e == 0 ? std::ldexp((float) m, -24) : std::ldexp(1.0f + m / 1024.0f, e - 15);
-    return s ? -f : f;
-}
-static uint16_t f2h(float f) {   // round to nearest even, normal range
-    uint32_t u; std::memcpy(&u, &f, 4);
-    const uint32_t s = (u >> 16) & 0x8000u; int e = (int) ((u >> 23) & 0xff) - 127 + 15; uint32_t m = u & 0x7fffffu;
-    uint32_t hm = m >> 13; const uint32_t rem = m & 0x1fffu;
-    uint32_t v = ((uint32_t) e << 10) | hm;
-    if (rem > 0x1000u || (rem == 0x1000u && (v & 1))) ++v;
-    return (uint16_t) (s | v);
+static float h2f(uint16_t h) { return ggml_fp16_to_fp32(h); }
+static uint16_t f2h(float f) { return ggml_fp32_to_fp16(f); }
+static double max_error(double worst, double error) {
+    return std::isfinite(error) ? std::max(worst, error) : std::numeric_limits<double>::infinity();
 }
 
 struct Q8 { std::vector<int8_t> q; std::vector<float> d; std::vector<float> xhat; };
@@ -375,6 +368,11 @@ int main(int argc, char** argv) {
         }
     }
     int fails = 0;
+    if (f2h(0.0f) != 0 || f2h(std::ldexp(1.0f, -24)) != 1 ||
+        f2h(1.0f) != 0x3c00 || !std::isinf(h2f(0x7c00)) || !std::isnan(h2f(0x7e00)) ||
+        std::isfinite(max_error(0, std::numeric_limits<double>::quiet_NaN()))) {
+        std::printf("FAIL: half conversion or nonfinite comparison self-check\n"); ++fails;
+    }
     if (devs.size() > 1) {   // the first device writes its outputs, the others compare to them
         if (g_dump || g_cmp) { std::printf("--devices takes neither --dump nor --cmp\n"); return 2; }
     }
@@ -391,7 +389,7 @@ int main(int argc, char** argv) {
     std::normal_distribution<float> nd(0.f, 1.f);
     auto report = [&](const char* what, int type, double worst, double tol) {
         const bool ok = worst <= tol;
-        std::printf("%-7s %-22s worst %.2e (tol %.0e) %s\n", iq::name(type), what, worst, tol, ok ? "ok" : "FAIL");
+        std::printf("%-7s %-22s worst %.2e (tol %.0e) %s%s\n", iq::name(type), what, worst, tol, ok ? "ok" : "FAIL", std::isfinite(worst) ? "" : " (nonfinite value or error)");
         fails += !ok;
     };
     for (int type : types) {
@@ -451,7 +449,7 @@ int main(int argc, char** argv) {
                 for (int r = 0; r < FF; ++r) {
                     double sc;
                     const double ref = refh(e, r, qx[0].xhat.data(), sc);
-                    worst = std::max(worst, std::fabs(h[(size_t) e * FF + r] - ref) / sc);
+                    worst = max_error(worst, std::fabs(h[(size_t) e * FF + r] - ref) / sc);
                 }
             report("token gate_up", type, worst, 1e-5);
             std::vector<int8_t> hq((size_t) NEXP * FF); std::vector<float> hd((size_t) NEXP * FF / 32);
@@ -466,7 +464,7 @@ int main(int argc, char** argv) {
             for (int e = 0; e < NEXP; ++e)
                 for (int r = 0; r < E; ++r) {
                     double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], qh[e].xhat.data(), FF, &sa);
-                    worst = std::max(worst, std::fabs(part[(size_t) e * E + r] - ref) / (sa + 1e-30));
+                    worst = max_error(worst, std::fabs(part[(size_t) e * E + r] - ref) / (sa + 1e-30));
                 }
             report("token down", type, worst, 1e-6);
 
@@ -489,7 +487,7 @@ int main(int argc, char** argv) {
                     for (int r = 0; r < FF; ++r) {
                         double sc;
                         const double ref = refh(e, r, &x[(size_t) idx[lr] * E], sc);
-                        w2 = std::max(w2, std::fabs((double) h2f(h16[(size_t) lr * FF + r]) - ref) / sc);
+                        w2 = max_error(w2, std::fabs((double) h2f(h16[(size_t) lr * FF + r]) - ref) / sc);
                     }
             // (the prompt sets quantise the activations, so this worst case is data dependent: IQ1_S measured 7.1e-3 .. 1.08e-2 over
             // different random-data orders, the same on the older build, with every other check far inside; IQ1_S gets 1.5e-2)
@@ -508,7 +506,7 @@ int main(int argc, char** argv) {
                     for (int c = 0; c < FF; ++c) hf[c] = h2f(h16[(size_t) lr * FF + c]);
                     for (int r = 0; r < E; ++r) {
                         double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], hf.data(), FF, &sa);
-                        w2 = std::max(w2, std::fabs(y[(size_t) lr * E + r] - ref) / (sa + 1e-30));
+                        w2 = max_error(w2, std::fabs(y[(size_t) lr * E + r] - ref) / (sa + 1e-30));
                     }
                 }
             // (the prompt sets' tiles take F16 operands for the i-quants: the tile's own rounding, not the token path's)
@@ -548,13 +546,13 @@ int main(int argc, char** argv) {
                         for (int r = 0; r < FF; ++r) {
                             double sc;
                             const double ref = refh(e, r, &x[(size_t) idx[lr] * E], sc);
-                            wg = std::max(wg, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - ref) / sc);
-                            wx = std::max(wx, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - (double) h2f(hs[(size_t) lr * FF + r])) / sc);
+                            wg = max_error(wg, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - ref) / sc);
+                            wx = max_error(wx, std::fabs((double) h2f(hm[(size_t) lr * FF + r]) - (double) h2f(hs[(size_t) lr * FF + r])) / sc);
                         }
                         for (int r = 0; r < E; ++r) {
                             double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], hf.data(), FF, &sa);
-                            wd = std::max(wd, std::fabs(ym[(size_t) lr * E + r] - ref) / (sa + 1e-30));
-                            wy = std::max(wy, std::fabs((double) ym[(size_t) lr * E + r] - (double) ys[(size_t) lr * E + r]) / (sa + 1e-30));
+                            wd = max_error(wd, std::fabs(ym[(size_t) lr * E + r] - ref) / (sa + 1e-30));
+                            wy = max_error(wy, std::fabs((double) ym[(size_t) lr * E + r] - (double) ys[(size_t) lr * E + r]) / (sa + 1e-30));
                         }
                     }
                 std::printf("%-7s matrix-core tiles taken %lld (scalar run: %lld)\n", iq::name(type), taken, scal);
@@ -586,13 +584,13 @@ int main(int argc, char** argv) {
                         double sg, su;
                         const double g = dotd(&G[e].w[(size_t) r * E], xhat.data(), E, &sg);
                         const double u = dotd(&U[e].w[(size_t) r * E], xhat.data(), E, &su);
-                        wg = std::max(wg, std::fabs(hc[r] - swiglu(g, u, lim)) / (sg + su + 1e-30));
+                        wg = max_error(wg, std::fabs(hc[r] - swiglu(g, u, lim)) / (sg + su + 1e-30));
                     }
                     gg::iq_cpu_quant(fm.d_act, &href[(size_t) e * FF], FF, hact.data());
                     const std::vector<float> hhat = act_values(fm.d_act, hact.data(), FF);
                     const void* hpp[1] = {hact.data()};
                     gg::iq_cpu_down(fm, &blobs[e * blob + off[2]], hpp, 1, yp, 0, E);
-                    for (int r = 0; r < E; ++r) { double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], hhat.data(), FF, &sa); wd = std::max(wd, std::fabs(yc[r] - ref) / (sa + 1e-30)); }
+                    for (int r = 0; r < E; ++r) { double sa; const double ref = dotd(&D[e].w[(size_t) r * FF], hhat.data(), FF, &sa); wd = max_error(wd, std::fabs(yc[r] - ref) / (sa + 1e-30)); }
                 }
                 report("cpu gate_up vs ref", type, wg, 1e-5);
                 report("cpu down vs ref", type, wd, 1e-5);
@@ -623,7 +621,7 @@ int main(int argc, char** argv) {
                     double sg, su;
                     const double g = dotd(G[0].w.data() + (size_t) r * E, xhat.data(), E, &sg);
                     const double u = dotd(U[0].w.data() + (size_t) r * E, xhat.data(), E, &su);
-                    wg = std::max(wg, std::fabs(h[r] - swiglu(g, u, lim)) / (sg + su + 1e-30));
+                    wg = max_error(wg, std::fabs(h[r] - swiglu(g, u, lim)) / (sg + su + 1e-30));
                 }
                 gg::iq_cpu_quant(fm.d_act, h.data(), FF, hact.data());
                 const auto hhat = act_values(fm.d_act, hact.data(), FF);
@@ -631,10 +629,61 @@ int main(int argc, char** argv) {
                 gg::iq_cpu_down(fm, mx.data(), hq, 1, yp, 0, E);
                 for (int r = 0; r < E; ++r) {
                     double sa; const double ref = dotd(decoded.data() + (size_t) r * FF, hhat.data(), FF, &sa);
-                    wd = std::max(wd, std::fabs(y[r] - ref) / (sa + 1e-30));
+                    wd = max_error(wd, std::fabs(y[r] - ref) / (sa + 1e-30));
                 }
                 report("mixed CPU gate/up", type, wg, 1e-5);
                 report("mixed CPU MXFP4 down", type, wd, 1e-5);
+                if (dev) {
+                    const size_t mixed_blob = off[2] + al(mx.size());
+                    std::vector<uint8_t> mixed(mixed_blob, 0);
+                    std::memcpy(mixed.data(), blobs.data(), off[2]);
+                    std::memcpy(mixed.data() + off[2], mx.data(), mx.size());
+                    uint8_t* dm = up(mixed);
+                    std::vector<unsigned long long> plan = {(unsigned long long) dm};
+                    iq::Args a{};
+                    a.plan_ptr = up(plan); a.n_embd = E; a.n_ff = FF; a.tg = type; a.td = 39;
+                    for (int r = 0; r < 3; ++r) a.tr[r] = off[r];
+                    const Q8 hquant = quant(h.data(), FF);
+                    a.hq = up(hquant.q); a.hd = up(hquant.d);
+                    float* dp; CK(hipMalloc(&dp, E * sizeof(float))); a.part = dp;
+                    if (!iq::down(a, 1, 1, 0)) { std::printf("mixed GPU down refused\n"); ++fails; }
+                    CK(hipDeviceSynchronize());
+                    const auto got = down_(dp, E);
+                    double worst = 0;
+                    for (int r = 0; r < E; ++r) {
+                        double sa; const double ref = dotd(decoded.data() + (size_t) r * FF, hquant.xhat.data(), FF, &sa);
+                        if ((!std::isfinite(got[r]) || !std::isfinite(ref)) && std::isfinite(worst))
+                            std::printf("%s mixed GPU token down nonfinite at row %d: got %g ref %g\n", iq::name(type), r, got[r], ref);
+                        worst = max_error(worst, std::fabs(got[r] - ref) / (sa + 1e-30));
+                    }
+                    report("mixed GPU token down", type, worst, 1e-6);
+                    const int rows = 37;
+                    std::vector<uint16_t> hh((size_t) rows * FF);
+                    for (int i = 0; i < rows * FF; ++i) hh[i] = f2h(h[i % FF]);
+                    std::vector<int> bounds = {0, rows};
+                    iq::SetArgs q{};
+                    q.wbase = dm; q.stride = mixed_blob; q.tr[2] = off[2]; q.bounds = up(bounds);
+                    q.max_rows = rows; q.n_exp = 1; q.n_embd = E; q.n_ff = FF; q.tg = type; q.td = 39;
+                    q.xh = up(hh); q.ldx = FF; q.ldo = E;
+                    float* dy; CK(hipMalloc(&dy, (size_t) rows * E * sizeof(float))); q.y = dy;
+                    if (!iq::set_down(q, 0)) { std::printf("mixed GPU set down refused\n"); ++fails; }
+                    CK(hipDeviceSynchronize());
+                    const auto ys = down_(dy, (size_t) rows * E);
+                    std::vector<float> hf(FF);
+                    for (int c = 0; c < FF; ++c) hf[c] = h2f(hh[c]);
+                    worst = 0;
+                    for (int r = 0; r < E; ++r) {
+                        double sa; const double ref = dotd(decoded.data() + (size_t) r * FF, hf.data(), FF, &sa);
+                        for (int i = 0; i < rows; ++i) {
+                            const float v = ys[(size_t) i * E + r];
+                            if ((!std::isfinite(v) || !std::isfinite(ref)) && std::isfinite(worst))
+                                std::printf("%s mixed GPU set down nonfinite at row %d column %d: got %g ref %g\n", iq::name(type), i, r, v, ref);
+                            worst = max_error(worst, std::fabs(v - ref) / (sa + 1e-30));
+                        }
+                    }
+                    report("mixed GPU set down", type, worst, 3e-3);
+                    CK(hipFree(dp)); CK(hipFree(dy)); CK(hipFree(dm));
+                }
             }
         }
         CK(hipFree(dblob));
@@ -644,5 +693,5 @@ int main(int argc, char** argv) {
     if (g_cmp) { std::printf("bit-compare vs golden: %ld buffers, %ld differ -> %s\n", g_cmp_n, g_cmp_bad, g_cmp_bad ? "DIFFERENT" : "IDENTICAL"); fails += g_cmp_bad != 0; }
     if (g_dump) std::fclose(g_dump);
     std::printf("%s\n", fails ? "FAILED" : "ALL OK");
-    return fails;
+    return fails ? 1 : 0;
 }

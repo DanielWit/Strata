@@ -470,6 +470,13 @@ __device__ __forceinline__ void deq8(const uint8_t* __restrict__ row, int kb, in
         for (int j = 0; j < 4; ++j) w[j] = dl * (float) (int8_t) (c0 >> (8 * j));
 #pragma unroll
         for (int j = 0; j < 4; ++j) w[4 + j] = dl * (float) (int8_t) (c1 >> (8 * j));
+    } else if constexpr (T == kMXFP4) {
+        const int8_t values[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+        const uint32_t e = b[0];
+        const float d = __uint_as_float(e < 2 ? 0x00200000u << e : (e - 1) << 23);
+        const uint8_t* qs = b + 1 + 8 * (p & 1);
+#pragma unroll
+        for (int j = 0; j < 8; ++j) w[j] = d * (float) values[p < 2 ? qs[j] & 15 : qs[j] >> 4];
     } else if constexpr (T == kIQ4_NL) {
         const float dl = h2f(b);
         const uint8_t* qs = b + 2 + 8 * (p & 1);
@@ -1510,10 +1517,17 @@ bool supported(int t) {
     }
 }
 
+bool supported_down(int t) {
+#if !defined(STRATA_METAL)
+    if (t == kMXFP4) return true;
+#endif
+    return supported(t);
+}
+
 bool known(int t) { return block_bytes(t) > 0; }
 
 int block_values(int t) {
-    if (t == kIQ4_NL) return 32;   // (ggml's QK4_NL: the only type here whose block is not 256 values)
+    if (t == kIQ4_NL || t == kMXFP4) return 32;
     return is_tq(t) ? 128 : block_bytes(t) > 0 ? 256 : 0;
 }
 
@@ -1534,6 +1548,7 @@ int block_bytes(int t) {
         case kIQ1_S: return Ty<kIQ1_S>::B;
         case kIQ1_M: return Ty<kIQ1_M>::B;
         case kIQ4_NL: return Ty<kIQ4_NL>::B;
+        case kMXFP4: return Ty<kMXFP4>::B;
         default: return 0;
     }
 }
@@ -1560,6 +1575,7 @@ const char* name(int t) {
         case kIQ1_S: return "IQ1_S";
         case kIQ1_M: return "IQ1_M";
         case kIQ4_NL: return "IQ4_NL";
+        case kMXFP4: return "MXFP4";
         default: return "?";
     }
 }
@@ -1580,6 +1596,7 @@ bool gate_up(const Args& a, int groups, int ne_max, cudaStream_t s) {
 }
 
 bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
+    if (!supported_down(a.td)) return false;
 #if defined(STRATA_METAL)
     // down_kernel on the Metal dispatch; the launch below is the fallback
     if (::strata::dsv41::metal_host::iq_dn(a.plan_ptr, a.grp_ptr, a.grp_start, a.grp_ent, a.n_groups, a.tr, a.n_embd,
@@ -1589,6 +1606,9 @@ bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
     if (is_tq(a.td)) return tq::down(a, groups, ne_max, s);
     if (a.n_ff % 256 != 0 || a.n_embd % (kWarps * kDnRW) != 0) return false;
 #define DN_(T) dn_ne<T>(a, groups, ne_max, s)
+#if !defined(STRATA_METAL)
+    if (a.td == kMXFP4) { DN_(kMXFP4); return true; }
+#endif
     DS4_IQ_SWITCH(a.td, DN_)
 #undef DN_
     return true;
@@ -1642,6 +1662,7 @@ bool set_gate_up(const SetArgs& a, cudaStream_t s) {
 }
 
 bool set_down(const SetArgs& a, cudaStream_t s) {
+    if (!supported_down(a.td)) return false;
 #if defined(STRATA_METAL)
     if (a.hbounds != nullptr && ::strata::dsv41::metal_host::iq_set_dn(a.wbase, a.stride, a.tr, a.hbounds, a.n_exp, a.total_rows, a.n_embd, a.n_ff, a.limit, a.xh, a.ldx, a.y, a.ldo, a.tg, a.td))
         return true;
@@ -1655,6 +1676,9 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
     }
     const dim3 grid((unsigned) ((a.max_rows + BM - 1) / BM), (unsigned) (a.n_embd / BN), (unsigned) a.n_exp);
 #define SD_(T) launch_set<T, false>(t, grid, s)
+#if !defined(STRATA_METAL)
+    if (a.td == kMXFP4) { SD_(kMXFP4); return true; }
+#endif
     DS4_IQ_SWITCH(a.td, SD_)
 #undef SD_
     return true;

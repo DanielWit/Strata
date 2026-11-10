@@ -2422,14 +2422,12 @@ struct Model::Impl {
                       gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]);
                 return false;
             }
-            if (down == gg::kTypeMXFP4) {   // shortcut: mixed MXFP4 runs on CPU until the GPU paths support it
 #if defined(STRATA_METAL)
+            if (down == gg::kTypeMXFP4) {
                 err = P + ": mixed MXFP4 experts are not supported on Metal";
                 return false;
-#endif
-                l.cpu_only = true;
-                std::fprintf(stderr, "ds4: layer %d has mixed %s/MXFP4 experts; using the CPU lane\n", l.il, gg::type_name(gate));
             }
+#endif
         }
         l.blob = off;
         // a type the device kernels do not take (none of the i-quants now: gg::type_on_device lists them): the layer stays on the CPU lane, where

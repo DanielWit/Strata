@@ -1177,7 +1177,7 @@ bool iq_args(const x3::ExpertLayout& lay, int n_embd, int n_ff, float limit, iq:
     ia.limit = limit;
     ia.tg = expert_type(lay, 0);
     ia.td = expert_type(lay, 2);
-    if (ia.tg != expert_type(lay, 1) || !iq::supported(ia.tg) || !iq::supported(ia.td) || n_embd % iq::block_values(ia.tg) != 0 ||
+    if (ia.tg != expert_type(lay, 1) || !iq::supported(ia.tg) || !iq::supported_down(ia.td) || n_embd % iq::block_values(ia.tg) != 0 ||
         n_ff % iq::block_values(ia.td) != 0) {
         std::fprintf(stderr, "ds4 gguf %s: expert types %s / %s / %s (n_embd %d, n_ff %d) not covered\n", who,
                      type_name(expert_type(lay, 0)), type_name(expert_type(lay, 1)), type_name(expert_type(lay, 2)),
@@ -1506,7 +1506,7 @@ void moe_down(const x3::MoeArgs& a, const float* h, const float* sh_out, float* 
     m.part = sc->part;
     m.hq = sc->hq;
     m.hd = sc->hd;
-    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(h, (size_t) a.n_ff, a.k, a.n_ff, sc->hq, sc->hd, s);
+    (expert_type(a.lay, 2) == kTypeMXFP4 ? q8_quant : iq_act_quant)(h, (size_t) a.n_ff, a.k, a.n_ff, sc->hq, sc->hd, s);
     if (!mx_experts(a.lay)) {   // low-bit experts: ds4_iq's down, then the same combine
         iq::Args ia;
         if (!iq_args(a.lay, a.n_embd, a.n_ff, a.limit, ia, "moe_down")) return;
@@ -1592,7 +1592,7 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s, bool cpu_only) {
         } else {
             iq::gate_up(ia, groups, a.T, s);
         }
-        (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
+        (expert_type(a.lay, 2) == kTypeMXFP4 ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
         if (mx) {
 #if defined(STRATA_METAL)
             // mx_down_kernel on the Metal dispatch; the launch below is the fallback

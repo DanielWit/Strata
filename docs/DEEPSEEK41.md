@@ -110,7 +110,19 @@ Setup needs `strata-dsv41` next to the engine (or `STRATA_DSV41_EXE`) and says s
 `cmake -DSTRATA_BUILD_DSV41=ON`. The default context is 8192 tokens, the size it was checked at; `--context` asks for more.
 Loading takes a few minutes (the config sets `"engine_ready_s": 3600`).
 
-The DeepSeek `UD-Q3_K_XL` set needs an engine built with its mixed-expert support; the 0.1.58 engine package does not have it. Four layers use the CPU for their experts, and prompts run in windows instead of the fast chunked path. This can be slower. A 16-token smoke test passed on two RTX 3090 cards with 251 GiB of system RAM; other hardware has not been tested with this set.
+The DeepSeek `UD-Q3_K_XL` set needs an engine built with its mixed-expert support; the 0.1.58 engine package does not have it. The CUDA source build runs its mixed IQ gate/up and MXFP4 down experts on the GPU as well as the CPU lane. It no longer forces those layers onto the CPU. Metal does not support this mixed layout.
+
+For an RTX 3090 (CUDA architecture 86), build from this checkout and point setup at that engine. Change the architecture for a different card:
+
+```sh
+cmake -S . -B build/q3 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 \
+  -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON
+cmake --build build/q3 --target strata-dsv41 -j 6
+STRATA_DSV41_EXE="$PWD/build/q3/strata-dsv41" ./setup.sh --family deepseek41 \
+  --model UD-Q3_K_XL --gguf-dir /path/to/your/gguf-files --no-start
+```
+
+This source path has been tested on two RTX 3090 cards with 251 GiB of system RAM. Other hardware has not been validated with this set.
 
 **Unsloth reuses its size names for both models Strata serves**, so `UD-Q3_K_XL` and `UD-IQ1_M` are also Qwen3.8-Flash-Next sizes. A name written on its own
 stays with the family that had it first: `--model UD-IQ1_M` is DeepSeek's, `--model UD-Q3_K_XL` is Qwen's (DeepSeek's 3-bit set arrived later). Say

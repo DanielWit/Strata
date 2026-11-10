@@ -810,6 +810,7 @@ struct QExperts {
     const uint8_t* mat(int e, int r) const { return host.data() + e * blob + lay.trellis[r]; }
     size_t rb(int r) const { return gg::type_row_bytes(r < 2 ? tg : td, r < 2 ? D : F); }
     double dot(int e, int r, int row, const float* x) const {
+        if (r == 2 && td == gg::kTypeMXFP4) return mx_dot(mat(e, r), F, row, x);
         return q_dot(r < 2 ? tg : td, mat(e, r) + row * rb(r), r < 2 ? D : F, x);
     }
 };
@@ -826,7 +827,7 @@ QExperts make_q(int D, int F, int n_exp, int tg, int td) {
     E.host.assign(E.blob * n_exp, 0);
     for (int e = 0; e < n_exp; ++e)
         for (int r = 0; r < 3; ++r) {
-            const std::vector<uint8_t> m = q_rand(E.lay.K[r], r < 2 ? F : D, r < 2 ? D : F);
+            const std::vector<uint8_t> m = r == 2 && td == gg::kTypeMXFP4 ? mx_rand(D, F) : q_rand(E.lay.K[r], r < 2 ? F : D, r < 2 ? D : F);
             std::memcpy(E.host.data() + e * E.blob + E.lay.trellis[r], m.data(), m.size());
         }
     E.dev = dev(E.host);
@@ -870,7 +871,7 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
             const int e = pick[t * 8 + i];
             std::vector<float> h(F);
             for (int f = 0; f < F; ++f) h[f] = (float) swiglu(E.dot(e, 0, f, xr.data()), E.dot(e, 1, f, xr.data()), lim);
-            const std::vector<float> hr = act_round(h.data(), F);
+            const std::vector<float> hr = td == gg::kTypeMXFP4 ? q8_round(h.data(), F) : act_round(h.data(), F);
             for (int d = 0; d < D; ++d) want[(size_t) t * D + d] += pw[t * 8 + i] * E.dot(e, 2, d, hr.data());
         }
         for (int d = 0; d < D; ++d)
@@ -949,10 +950,16 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
     const bool same = std::memcmp(win.data(), tok.data(), win.size() * 4) == 0;
     if (!same) ++g_fail;
     std::printf("%-44s %s\n", "  ... bit for bit the token path's", same ? "ok" : "FAIL");
-    for (int R : {90, 200, 400}) {   // the prompt path's set: experts of a few rows (the light kernels), then of more
+    for (int R : {75, 90, 200, 400}) {   // the prompt path's light kernels and tiles
         const int NT = 30;
         std::vector<int> owner(R), idx(R);
         for (int r = 0; r < R; ++r) owner[r] = (int) (rng() % n_exp);
+        if (R == 75) {   // empty experts and both sides of the light/tile boundary
+            int row = 0;
+            const int counts[] = {0, 1, 4, 16, 17, 37};
+            for (int e = 0; e < 6; ++e)
+                for (int i = 0; i < counts[e]; ++i) owner[row++] = e;
+        }
         std::sort(owner.begin(), owner.end());
         std::vector<int> bounds(n_exp + 1, 0);
         for (int e = 0, r = 0; e <= n_exp; ++e) {
@@ -1008,9 +1015,21 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
         expect(sw, hgot.data(), hwant.data(), hwant.size(), n_light == R ? 2e-3 : 8e-3);   // (IQ4_XS: the widest weights in F16)
         std::snprintf(sw, sizeof(sw), "  set down, %d rows, %d light", R, n_light);
         expect(sw, y.data(), ywant.data(), ywant.size(), n_light == R ? 1e-4 : 2e-3);
+        if (R == 75) {
+            for (int& bound : bounds) bound += 7;
+            CU(cudaMemcpyAsync(dbd, bounds.data(), bounds.size() * sizeof(int), cudaMemcpyHostToDevice, s));
+            sa.row0 = 7;
+            gg::set_gate_up(sa, dxs, D, didx, dh16, F, s);
+            gg::set_down(sa, dh16, F, dy, D, s);
+            CU(cudaStreamSynchronize(s));
+            const bool offset_same = host(dh16, h16.size()) == h16 && host(dy, y.size()) == y;
+            std::printf("%-44s %s\n", "  set with nonzero bounds/row0", offset_same ? "ok" : "FAIL");
+            if (!offset_same) ++g_fail;
+        }
         cudaFree(dxs), cudaFree(dbd), cudaFree(didx), cudaFree(dh16), cudaFree(dy);
     }
-    {   // the CPU lane: 3 tokens of expert 4, gate / up rows [7, 107) then all its down rows from the CPU's own h
+    if (td != gg::kTypeMXFP4) {   // mixed CPU arithmetic has its own reference in iq_expert_test
+        // the CPU lane: 3 tokens of expert 4, gate/up rows [7,107), then its down rows
         gg::IqCpu fm;
         std::string err;
         if (!gg::iq_cpu_fmt(tg, td, D, F, fm, err)) {
@@ -1940,6 +1959,13 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::strcmp(argv[1], "--bench-cpu") == 0) {   // [threads]
         bench_cpu(argc >= 3 ? std::atoi(argv[2]) : 1);
         return 0;
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "--mixed-roles") == 0) {
+        test_experts_q(512, 256, gg::iq::kIQ3_XXS, gg::kTypeMXFP4, s);
+        test_experts_q(512, 256, gg::iq::kIQ2_S, gg::kTypeMXFP4, s);
+        if (gg::launch_errors()) ++g_fail;
+        std::printf("%s (%d failed)\n", g_fail ? "FAILED" : "ALL OK", g_fail);
+        return g_fail ? 1 : 0;
     }
     if (argc >= 2 && std::strcmp(argv[1], "--q8k") == 0) {   // the low-bit activations' Q8_K rounding (DS4_IQ_Q8K)
         test_q8k(s);
