@@ -1,65 +1,57 @@
-name: Minimal serving runtime
-
+name: Q3 backend validation
 on:
   push:
-    paths:
-      - .github/workflows/terminal-minimal-server.yml
-      - requirements.txt
-      - strata.py
-      - strata_cli/**
-      - strata_control/**
-      - serve/**
-      - tests/terminal/test_runtime.py
-      - tools/minimal_server_smoke.py
-      - tools/strata_tokenizer.py
-  pull_request:
-    paths:
-      - .github/workflows/terminal-minimal-server.yml
-      - requirements.txt
-      - strata.py
-      - strata_cli/**
-      - strata_control/**
-      - serve/**
-      - tests/terminal/test_runtime.py
-      - tools/minimal_server_smoke.py
-      - tools/strata_tokenizer.py
+    branches: [q3-backend-validation]
   workflow_dispatch:
-
 permissions:
   contents: read
-
+env:
+  SOURCE_REF: 3de03954d8a72b43e4daf46dd9a4a24b6d92fa22
 jobs:
-  fake-engine:
-    name: Linux / runtime requirements only
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  hip:
+    name: DeepSeek HIP compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container: rocm/dev-ubuntu-24.04:7.2.4-complete
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
+          ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - name: Tools and pinned ggml
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build
+          commit=$(python3 -c 'import re; print(re.search(r"^LLAMA_CPP_COMMIT = \"([^\"]+)\"", open("setup.py").read(), re.M)[1])')
+          git init -q llama.cpp
+          git -C llama.cpp remote add origin https://github.com/ggml-org/llama.cpp.git
+          git -C llama.cpp fetch -q --depth 1 origin "$commit"
+          git -C llama.cpp checkout -q FETCH_HEAD
+      - name: Configure and build DeepSeek
+        run: |
+          cmake --preset hip-compile -B build -DSTRATA_GGML_DIR="$PWD/llama.cpp" -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=/opt/rocm -DCMAKE_PREFIX_PATH=/opt/rocm
+          cmake --build build --target strata-dsv41 -j 2
+  metal:
+    name: DeepSeek Metal compile
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
         with:
-          python-version: '3.11'
-      - name: Install only pinned runtime requirements
-        shell: bash
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+      - name: Tools and pinned dependencies
         run: |
-          python -m venv "$RUNNER_TEMP/strata-runtime-venv"
-          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m pip install -r requirements.txt
-      - name: Check fake-engine serving without terminal packages
-        shell: bash
+          brew install ninja
+          curl -fsSL https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip -o metal-cpp.zip
+          echo '4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4  metal-cpp.zip' | shasum -a 256 -c -
+          unzip -q metal-cpp.zip -d _mcpp
+          commit=$(python3 -c 'import re; print(re.search(r"^LLAMA_CPP_COMMIT = \"([^\"]+)\"", open("setup.py").read(), re.M)[1])')
+          git init -q llama.cpp
+          git -C llama.cpp remote add origin https://github.com/ggml-org/llama.cpp.git
+          git -C llama.cpp fetch -q --depth 1 origin "$commit"
+          git -C llama.cpp checkout -q FETCH_HEAD
+      - name: Configure and build DeepSeek
         run: |
-          python - <<'PY'
-          import os
-          import subprocess
-          from pathlib import Path
-
-          report = Path(os.environ['RUNNER_TEMP']) / 'minimal-server-smoke.json'
-          python = str(Path(os.environ['RUNNER_TEMP']) / 'strata-runtime-venv' / 'bin' / 'python')
-          subprocess.run([python, 'tools/minimal_server_smoke.py',
-                          '--report', str(report)], check=True)
-          print(report.read_text())
-          PY
-      - name: Run full server suite without terminal packages
-        shell: bash
-        run: |
-          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
+          cmake -S metal -B build-metal -G Ninja -DCMAKE_BUILD_TYPE=Release -DMETAL_CPP_DIR="$PWD/_mcpp/metal-cpp" -DSTRATA_GGML_DIR="$PWD/llama.cpp"
+          cmake --build build-metal --target strata_ds4 -j 3
