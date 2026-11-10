@@ -89,7 +89,7 @@ ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_1
 # IQ4_NL table the 1-bit sets ship and ISTA-DAS publishes).  Strata installs it with the shared IQ4_NL table (the smaller download, the table every other set uses) and takes the
 # set's own MXFP8 table when it is available and no shared table is found first.  set_bytes = shards 1-7 = 282.31 GB; the bytes by role come from the GGUF headers:
 # routed experts 271.62 GB (MXFP4 219.0, IQ3_S 21.4, Q3_K 15.6, IQ2_S 8.7, IQ3_XXS 6.9), the rest 10.69 GB (attention in Q8_0 and Q5_K, the shared experts in Q8_0, the
-# router in F32).  This set has not been timed or scored against the original model here.
+# router in F32). Quality against the original model has not been measured here.
 ISTA_SETS["UD-Q3_K_XL"] = {"title": "Unsloth UD-Q3_K_XL", "set_bytes": 282_310_606_623, "experts_gb": 271.62, "dense_gb": 10.69,
                            "profile": "profile-2.00.bin", "meta_bytes": 0, "ppl": "?", "ram_ok_gb": 64.0, "disk_total": 401.0, "measured": "",
                            "tight_words": "reads the rest from the SSD. This version has not been timed yet.",
@@ -789,10 +789,17 @@ MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-I
 MAC_NOT_YET = ("UD-Q3_K_XL",)
 MAC_NOT_YET_LINE = "Unsloth's UD-Q3_K_XL set doesn't run on a Mac yet; the UD-IQ1_S and UD-IQ1_M, 1.75, 2.00 and 2.25 sets do."
 # The same two sets were kept off a DGX Spark (linux-aarch64, GB10) until a Spark run passed: both passed there on 2026-10-30 (real `strata launch --model-path`,
-# 10 of 10 answers, tool call correct), so the tuple was empty.  UD-Q3_K_XL goes back in: aarch64 has no kernel for its expert types either (ds4_cuda_only.cu
-# compiles the IQ3_S and Q3_K kernels for CUDA only) and it was never started on a Spark.
+# 10 of 10 answers, tool call correct), so the tuple was empty. UD-Q3_K_XL stays gated until it has been tested on a Spark.
 AARCH64_NOT_YET = ("UD-Q3_K_XL",)
 AARCH64_NOT_YET_LINE = "Unsloth's UD-Q3_K_XL set was not tested on a DGX Spark yet; the 1-bit DeepSeek sets and the 2.00 and 2.25 sets were."
+
+
+def source_engine_problem(model: str | None) -> str | None:
+    """Q3 is source-engine-only until a released package carries mixed-expert support."""
+    if model == "UD-Q3_K_XL" and not os.path.isfile(os.environ.get("STRATA_DSV41_EXE", "").strip()):
+        return ("DeepSeek UD-Q3_K_XL needs a source-built engine with mixed-expert support. "
+                "Set STRATA_DSV41_EXE to that executable before setup; the released 0.1.58 engine cannot load this model.")
+    return None
 
 
 def not_here(model: str | None) -> str | None:
